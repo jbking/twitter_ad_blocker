@@ -59,7 +59,7 @@ var youMightLikeSvgPath = 'M12 1.75c-5.11 0-9.25 4.14-9.25 9.25 0 4.77 3.61 8.7 
 var adsSvgPath = 'M19.498 3h-15c-1.381 0-2.5 1.12-2.5 2.5v13c0 1.38 1.119 2.5 2.5 2.5h15c1.381 0 2.5-1.12 2.5-2.5v-13c0-1.38-1.119-2.5-2.5-2.5zm-3.502 12h-2v-3.59l-5.293 5.3-1.414-1.42L12.581 10H8.996V8h7v7z';
 var peopleFollowSvgPath = 'M17.863 13.44c1.477 1.58 2.366 3.8 2.632 6.46l.11 1.1H3.395l.11-1.1c.266-2.66 1.155-4.88 2.632-6.46C7.627 11.85 9.648 11 12 11s4.373.85 5.863 2.44zM12 2C9.791 2 8 3.79 8 6s1.791 4 4 4 4-1.79 4-4-1.791-4-4-4z';
 var xAd = '>Ad<'; // TODO: add more languages; appears to only be used for English accounts as of 2023-08-03
-const promotedTweetTextSet = new Set(['Promoted Tweet', 'プロモツイート']);
+const promotedTweetTextSet = new Set(['Promoted Tweet', 'プロモツイート', '広告']);
 
 function getAds() {
   return Array.from(document.querySelectorAll('div')).filter(function(el) {
@@ -252,8 +252,12 @@ function debounce(func, delay) {
   };
 }
 
-// Debounced version of getAndHideAds (wait 500ms after changes stop)
-const debouncedHideAds = debounce(getAndHideAds, 500);
+// Must stay on setTimeout (deferred task) rather than removing synchronously
+// inside the MutationObserver callback: synchronous .remove() races React's
+// reconciliation on x.com/home and trips its "問題が発生しました" error
+// boundary. 50ms is short enough that the ad flash on iframe auto-reload is
+// imperceptible while still coalescing React's mutation bursts.
+const debouncedHideAds = debounce(getAndHideAds, 50);
 
 // Set up a MutationObserver to detect when new content (including ads) is added
 const contentObserver = new MutationObserver(debouncedHideAds);
