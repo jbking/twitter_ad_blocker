@@ -259,8 +259,22 @@ function debounce(func, delay) {
 // imperceptible while still coalescing React's mutation bursts.
 const debouncedHideAds = debounce(getAndHideAds, 50);
 
-// Set up a MutationObserver to detect when new content (including ads) is added
-const contentObserver = new MutationObserver(debouncedHideAds);
+// Filter to real timeline content — skip background mutations (relative time
+// label updates, notification badges, tooltips) so the full-page sweep only
+// runs on actual new tweets / trends / Who-to-follow cells / promoted units.
+const newContentSelector = `${articleSelector}, ${adSelector}, ${trendSelector}, ${userSelector}`;
+
+const contentObserver = new MutationObserver((mutations) => {
+  for (const m of mutations) {
+    for (const node of m.addedNodes) {
+      if (node.nodeType !== 1) continue;
+      if (node.matches?.(newContentSelector) || node.querySelector?.(newContentSelector)) {
+        debouncedHideAds();
+        return;
+      }
+    }
+  }
+});
 
 // Start observing the document body for new content
 setTimeout(() => {
