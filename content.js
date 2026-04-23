@@ -12,7 +12,6 @@ var userClickedForYouTab = false; // Track if user manually clicked For You tab
 var lastTabSwitchTime = 0; // Track the last time we programmatically switched tabs
 var shouldMonitorTabChanges = true; // Whether to keep monitoring tab changes
 var tabCheckIntervalId = null; // ID for the tab checking interval
-var tabSetupIntervalId = null; // ID for the tab setup interval
 
 // Load user preferences from storage
 chrome.storage.sync.get(
@@ -262,46 +261,51 @@ const debouncedHideAds = debounce(getAndHideAds, 50);
 // runs on actual new tweets / trends / Who-to-follow cells / promoted units.
 const newContentSelector = `${articleSelector}, ${adSelector}, ${trendSelector}, ${userSelector}`;
 
+const premiumAsideSelector = "aside[aria-label='Subscribe to Premium'], aside[aria-label='Upgrade to Premium+']";
+
+// Coalesce premium-upsell removal so we don't schedule redundant tasks per
+// mutation. Removal runs as a new task (setTimeout 0) to stay off React's
+// current commit — same deferral semantics the old setInterval(500ms) had.
+let premiumCheckPending = false;
+function schedulePremiumAsideRemoval() {
+  if (premiumCheckPending) return;
+  premiumCheckPending = true;
+  setTimeout(() => {
+    premiumCheckPending = false;
+    document.querySelectorAll(premiumAsideSelector).forEach(a => a.remove());
+  }, 0);
+}
+
 const contentObserver = new MutationObserver((mutations) => {
+  let sweepRelevant = false;
+  let premiumSeen = false;
   for (const m of mutations) {
     for (const node of m.addedNodes) {
       if (node.nodeType !== 1) continue;
-      if (node.matches?.(newContentSelector) || node.querySelector?.(newContentSelector)) {
-        debouncedHideAds();
-        return;
+      if (!sweepRelevant && (node.matches?.(newContentSelector) || node.querySelector?.(newContentSelector))) {
+        sweepRelevant = true;
       }
+      if (!premiumSeen && (node.matches?.(premiumAsideSelector) || node.querySelector?.(premiumAsideSelector))) {
+        premiumSeen = true;
+      }
+      if (sweepRelevant && premiumSeen) break;
     }
+    if (sweepRelevant && premiumSeen) break;
   }
+  if (sweepRelevant) debouncedHideAds();
+  if (premiumSeen) schedulePremiumAsideRemoval();
 });
 
 // Start observing the document body for new content
 setTimeout(() => {
-  contentObserver.observe(document.body, { 
-    childList: true, 
-    subtree: true 
+  contentObserver.observe(document.body, {
+    childList: true,
+    subtree: true
   });
+  // Catch premium asides that rendered before the observer started.
+  schedulePremiumAsideRemoval();
   console.log('Observing for new content with debounced ad hiding');
 }, 1000);
-
-// re-check as user scrolls tweet sidebar (exists when image is opened)
-var sidebarExists = setInterval(function() {
-  let timelines = document.querySelectorAll("[aria-label='Timeline: Conversation']");
-
-  if (timelines.length == 2) {
-    let tweetSidebar = document.querySelectorAll("[aria-label='Timeline: Conversation']")[0].parentElement.parentElement;
-    tweetSidebar.addEventListener('scroll', () => getAndHideAds());
-  }
-}, 500);
-
-var subscribeToPremiumExists = setInterval(function() {
-  let timeline = document.querySelector("aside[aria-label='Subscribe to Premium']");
-  if (timeline) { timeline.remove() }
-}, 500);
-
-var upgradeToPremiumPlusExists = setInterval(function() {
-  let timeline = document.querySelector("aside[aria-label='Upgrade to Premium+']");
-  if (timeline) { timeline.remove() }
-}, 500);
 
 // Try switching tab immediately when page is interactive
 document.addEventListener('DOMContentLoaded', function() {
@@ -319,38 +323,26 @@ var checkForFollowingTab = setInterval(function() {
   }
 }, 1000);
 
-// Setup tab click listener to detect when user manually clicks tabs
-function setupTabClickListeners() {
-  // Find all tab elements
-  const tabElements = document.querySelectorAll('a[role="tab"]');
-  
-  tabElements.forEach(tab => {
-    // Add click listener to all tabs if they don't already have one
-    if (!tab.dataset.listenerAdded) {
-      tab.addEventListener('click', function(e) {
-        // Check if this is the "For You" tab when it's clicked
-        if (this.textContent.includes('For you')) {
-          console.log('User clicked "For You" tab');
-          userClickedForYouTab = true;
-          // Reset after 7 seconds to allow auto-switching again
-          setTimeout(() => {
-            userClickedForYouTab = false;
-            console.log('User "For You" click timeout expired, resuming auto-switching');
-          }, 7000);
-        } else if (this.textContent.includes('Following')) {
-          console.log('User clicked "Following" tab');
-          // User manually clicked Following, update our state
-          hasSuccessfullySwitchedTab = true;
-        }
-      });
-      tab.dataset.listenerAdded = 'true';
-      console.log('Added click listener to tab: ' + tab.textContent.trim());
-    }
-  });
-}
-
-// Check for tabs periodically and set up listeners
-tabSetupIntervalId = setInterval(setupTabClickListeners, 2000);
+// Event delegation: a single document-level capture-phase click listener
+// handles every tab click, so we no longer need setInterval(2s) sweeping the
+// tree to re-attach per-tab listeners (which also leaked when X remounted
+// tabs with the same dataset flag cleared).
+document.addEventListener('click', (e) => {
+  const tab = e.target.closest?.('a[role="tab"]');
+  if (!tab) return;
+  const text = tab.textContent;
+  if (text.includes('For you')) {
+    console.log('User clicked "For You" tab');
+    userClickedForYouTab = true;
+    setTimeout(() => {
+      userClickedForYouTab = false;
+      console.log('User "For You" click timeout expired, resuming auto-switching');
+    }, 7000);
+  } else if (text.includes('Following')) {
+    console.log('User clicked "Following" tab');
+    hasSuccessfullySwitchedTab = true;
+  }
+}, true);
 
 // Function to stop monitoring tab changes after some time
 function stopTabMonitoring() {
@@ -361,11 +353,6 @@ function stopTabMonitoring() {
   if (tabCheckIntervalId) {
     clearInterval(tabCheckIntervalId);
     tabCheckIntervalId = null;
-  }
-  
-  if (tabSetupIntervalId) {
-    clearInterval(tabSetupIntervalId);
-    tabSetupIntervalId = null;
   }
   
   if (checkForFollowingTab) {
@@ -471,29 +458,32 @@ window.addEventListener('load', function() {
   }, 1500); // Larger delay after page is fully loaded
 });
 
-// Reset the switched flag when URL changes
-let lastUrl = location.href; 
-new MutationObserver(() => {
-  if (location.href !== lastUrl) {
-    lastUrl = location.href;
-    console.log('URL changed, resetting tab switch state');
-    hasSuccessfullySwitchedTab = false;
-    userClickedForYouTab = false; // Reset user click state on navigation
-    shouldMonitorTabChanges = true; // Re-enable monitoring on URL change
-    
-    // Only try to switch to Following tab if we're on the main timeline
-    if (location.pathname === '/' || location.pathname === '/home') {
-      setTimeout(switchToFollowing, 1000);
-      
-      // Stop monitoring after 7 seconds if we've successfully switched
-      setTimeout(function() {
-        if (hasSuccessfullySwitchedTab) {
-          stopTabMonitoring();
-        }
-      }, 7000);
-    }
+// URL-change detection: popstate covers back/forward, and a low-frequency
+// location.href poll covers SPA pushState navigations (content scripts run in
+// an isolated world so patching history.pushState here does not intercept the
+// page world's calls). The previous implementation observed the entire
+// document childList+subtree just to compare location — by far the hottest
+// cross-cutting observer in the script.
+let lastUrl = location.href;
+function onUrlChange() {
+  if (location.href === lastUrl) return;
+  lastUrl = location.href;
+  console.log('URL changed, resetting tab switch state');
+  hasSuccessfullySwitchedTab = false;
+  userClickedForYouTab = false;
+  shouldMonitorTabChanges = true;
+
+  if (location.pathname === '/' || location.pathname === '/home') {
+    setTimeout(switchToFollowing, 1000);
+    setTimeout(function() {
+      if (hasSuccessfullySwitchedTab) {
+        stopTabMonitoring();
+      }
+    }, 7000);
   }
-}).observe(document, {subtree: true, childList: true});
+}
+window.addEventListener('popstate', onUrlChange);
+setInterval(onUrlChange, 500);
 
 // Listen for changes to the settings
 chrome.storage.onChanged.addListener(function(changes, namespace) {
