@@ -62,27 +62,25 @@ var xAd = '>Ad<'; // TODO: add more languages; appears to only be used for Engli
 const promotedTweetTextSet = new Set(['Promoted Tweet', 'プロモツイート', '広告']);
 
 function getAds() {
-  return Array.from(document.querySelectorAll('div')).filter(function(el) {
-    var filteredAd;
+  // Match SVG marker <path d="..."> elements directly. The old approach read
+  // every div's innerHTML — a getter that re-serializes the whole subtree to
+  // a string — and substring-scanned it 5+ times per div. On X's ~10k-div
+  // timeline that dominated CPU (measured at ~24% of non-idle time).
+  const pathDs = [sponsoredSvgPath, sponsoredBySvgPath, youMightLikeSvgPath, adsSvgPath];
+  if (removePeopleToFollow) pathDs.push(peopleFollowSvgPath);
+  const pathSelector = pathDs.map(d => `path[d="${d}"]`).join(',');
 
-    if (el.innerHTML.includes(sponsoredSvgPath)) {
-      filteredAd = el;
-    } else if (el.innerHTML.includes(sponsoredBySvgPath)) {
-      filteredAd = el;
-    } else if (el.innerHTML.includes(youMightLikeSvgPath)) {
-      filteredAd = el;
-    } else if (el.innerHTML.includes(adsSvgPath)) {
-      filteredAd = el;
-    } else if (removePeopleToFollow && el.innerHTML.includes(peopleFollowSvgPath)) {
-      filteredAd = el;
-    } else if (el.innerHTML.includes(xAd)) {
-      filteredAd = el;
-    } else if (promotedTweetTextSet.has(el.innerText)) { // TODO: bring back multi-lingual support from git history
-      filteredAd = el;
-    }
+  const hits = new Set();
+  document.querySelectorAll(pathSelector).forEach(el => hits.add(el));
 
-    return filteredAd;
-  })
+  // Text-label markers render as <span>広告</span> / <span>Ad</span> / etc.
+  // textContent doesn't trigger layout flush like innerText does.
+  document.querySelectorAll('span').forEach(el => {
+    const t = el.textContent.trim();
+    if (promotedTweetTextSet.has(t) || t === 'Ad') hits.add(el);
+  });
+
+  return [...hits];
 }
 
 function hideAd(ad) {
